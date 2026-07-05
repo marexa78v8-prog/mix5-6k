@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Verify to Order</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0f1115;
+    color: #f2f2f2;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+  .card {
+    background: #1a1d24;
+    border-radius: 14px;
+    padding: 28px 24px;
+    width: 100%;
+    max-width: 380px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+  }
+  h1 {
+    font-size: 20px;
+    margin-bottom: 6px;
+    text-align: center;
+  }
+  p.sub {
+    font-size: 13px;
+    color: #9aa0aa;
+    text-align: center;
+    margin-bottom: 22px;
+  }
+  label {
+    display: block;
+    font-size: 13px;
+    color: #c7cbd1;
+    margin-bottom: 6px;
+  }
+  input {
+    width: 100%;
+    padding: 12px 14px;
+    border-radius: 8px;
+    border: 1px solid #2c313c;
+    background: #12141a;
+    color: #f2f2f2;
+    font-size: 16px;
+    margin-bottom: 16px;
+  }
+  input:focus {
+    outline: none;
+    border-color: #4f8cff;
+  }
+  button {
+    width: 100%;
+    padding: 13px;
+    border: none;
+    border-radius: 8px;
+    background: #4f8cff;
+    color: #fff;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:disabled {
+    background: #2c3542;
+    cursor: not-allowed;
+  }
+  #status {
+    margin-top: 18px;
+    text-align: center;
+    font-size: 14px;
+    min-height: 20px;
+  }
+  .pending { color: #f5b942; }
+  .accepted { color: #4fd67a; }
+  .rejected { color: #ff5c5c; }
+  .spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid #f5b942;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-right: 8px;
+    vertical-align: middle;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <h1>Verify Your Order</h1>
+  <p class="sub">Enter the PIN given to you by hotel staff and your phone number to continue.</p>
+
+  <form id="verifyForm">
+    <label for="phone">Phone Number</label>
+    <input type="tel" id="phone" placeholder="e.g. 07XXXXXXXX" required>
+
+    <label for="pin">PIN</label>
+    <input type="text" id="pin" placeholder="Enter your PIN" inputmode="numeric" required>
+
+    <button type="submit" id="submitBtn">Verify</button>
+  </form>
+
+  <div id="status"></div>
+</div>
+
+<script>
+  // Set this to your deployed Cloudflare Worker URL
+  const WORKER_URL = "https://YOUR-WORKER-SUBDOMAIN.workers.dev";
+  const ORDER_PAGE = "order.html";
+
+  const form = document.getElementById("verifyForm");
+  const statusEl = document.getElementById("status");
+  const submitBtn = document.getElementById("submitBtn");
+  let pollTimer = null;
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const phone = document.getElementById("phone").value.trim();
+    const pin = document.getElementById("pin").value.trim();
+
+    if (!phone || !pin) return;
+
+    submitBtn.disabled = true;
+    statusEl.innerHTML = '<span class="pending"><span class="spinner"></span>Sending for verification...</span>';
+
+    try {
+      const res = await fetch(`${WORKER_URL}/api/verify-pin`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone, pin })
+      });
+
+      if (!res.ok) throw new Error("Request failed");
+      const data = await res.json();
+
+      if (!data.id) throw new Error("No session returned");
+
+      statusEl.innerHTML = '<span class="pending"><span class="spinner"></span>Waiting for staff to confirm...</span>';
+      pollStatus(data.id);
+
+    } catch (err) {
+      statusEl.innerHTML = '<span class="rejected">Something went wrong. Please try again.</span>';
+      submitBtn.disabled = false;
+    }
+  });
+
+  function pollStatus(id) {
+    let attempts = 0;
+    const maxAttempts = 150; // ~5 minutes at 2s interval
+
+    pollTimer = setInterval(async () => {
+      attempts++;
+      if (attempts > maxAttempts) {
+        clearInterval(pollTimer);
+        statusEl.innerHTML = '<span class="rejected">Verification timed out. Please try again.</span>';
+        submitBtn.disabled = false;
+        return;
+      }
+
+      try {
+        const res = await fetch(`${WORKER_URL}/status?id=${encodeURIComponent(id)}`);
+        if (!res.ok) return;
+        const data = await res.json();
+
+        if (data.status === "accepted") {
+          clearInterval(pollTimer);
+          statusEl.innerHTML = '<span class="accepted">Verified! Redirecting...</span>';
+          setTimeout(() => {
+            window.location.href = `${ORDER_PAGE}?session=${encodeURIComponent(id)}`;
+          }, 900);
+        } else if (data.status === "rejected") {
+          clearInterval(pollTimer);
+          statusEl.innerHTML = '<span class="rejected">Verification was declined. Please check your PIN and try again.</span>';
+          submitBtn.disabled = false;
+        }
+        // if "pending", keep polling
+      } catch (err) {
+        // ignore transient errors, keep polling
+      }
+    }, 2000);
+  }
+</script>
+
+</body>
+</html>
